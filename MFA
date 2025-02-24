@@ -1,0 +1,222 @@
+import pyotp
+import json
+import os
+import tkinter as tk
+from tkinter import messagebox, simpledialog
+from cryptography.fernet import Fernet
+import time
+import threading
+
+DATA_DIR = r"C:\ProgramData\AscentMFA"
+
+if not os.path.exists(DATA_DIR):
+    os.makedirs(DATA_DIR)
+
+SECRET_FILE = os.path.join(DATA_DIR, "secrets.json")
+KEY_FILE = os.path.join(DATA_DIR, "key.key")
+PASSWORD_FILE = os.path.join(DATA_DIR, "password.json")
+
+def generate_key():
+    if not os.path.exists(KEY_FILE):
+        key = Fernet.generate_key()
+        with open(KEY_FILE, "wb") as key_file:
+            key_file.write(key)
+
+def load_key():
+    with open(KEY_FILE, "rb") as key_file:
+        return Fernet(key_file.read())
+
+generate_key()
+fernet = load_key()
+
+def load_secrets():
+    if os.path.exists(SECRET_FILE):
+        with open(SECRET_FILE, "rb") as file:
+            encrypted_data = file.read()
+            try:
+                return json.loads(fernet.decrypt(encrypted_data))
+            except:
+                return {}
+    return {}
+
+def save_secrets():
+    encrypted_data = fernet.encrypt(json.dumps(accounts).encode())
+    with open(SECRET_FILE, "wb") as file:
+        file.write(encrypted_data)
+
+accounts = load_secrets()
+
+def save_password(password):
+    encrypted_password = fernet.encrypt(password.encode())
+    with open(PASSWORD_FILE, "wb") as file:
+        file.write(encrypted_password)
+
+def load_password():
+    if os.path.exists(PASSWORD_FILE):
+        with open(PASSWORD_FILE, "rb") as file:
+            encrypted_password = file.read()
+            return fernet.decrypt(encrypted_password).decode()
+    return None
+
+class OTPApp:
+    def _init_(self, root):
+        self.root = root
+        self.root.title("Authenticator")
+        self.root.geometry("400x300")
+        self.root.resizable(False, False)  # Disable maximize
+        
+        stored_password = load_password()
+        if stored_password:
+            self.ask_password()
+        
+        self.title_label = tk.Label(root, text="Ascent MFA", font=("Times New Roman", 14, "bold"), fg="blue", borderwidth=1, relief="solid")
+        self.title_label.pack(pady=5, padx=10, fill=tk.X)
+        
+        top_frame = tk.Frame(root)
+        top_frame.pack(fill=tk.X)
+
+        self.add_button = tk.Button(top_frame, text=f"➕ Add", font=("Arial", 10), fg="blue", command=self.show_add_form)
+        self.add_button.pack(side=tk.LEFT, padx=20)
+        
+        self.delete_button = tk.Button(top_frame, text=f"❌ Delete", font=("Arial", 10), fg="red", command=self.delete_account)
+        self.delete_button.pack(side=tk.LEFT, padx=20)
+        
+        self.settings_button = tk.Button(top_frame, text=f"⚙️ Settings", font=("Arial", 10), fg="blue", command=self.show_settings)
+        self.settings_button.pack(side=tk.RIGHT, padx=20)
+        
+        self.main_frame = tk.Frame(root)
+        self.main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        account_frame = tk.Frame(self.main_frame, borderwidth=1, relief="solid")
+        account_frame.pack(side=tk.LEFT, padx=10, pady=10, fill=tk.Y)
+        
+        self.account_label = tk.Label(account_frame, text="Accounts", font=("Arial", 10, "bold"))
+        self.account_label.pack()
+        
+        self.listbox = tk.Listbox(account_frame, width=20, height=8)
+        self.listbox.pack(pady=5, padx=5)
+        
+        self.listbox.bind("<<ListboxSelect>>", self.update_otp)
+        
+        self.refresh_list()
+        
+        self.right_frame = tk.Frame(self.main_frame, borderwidth=1, relief="solid", padx=10, pady=10)
+        self.right_frame.pack(side=tk.RIGHT, padx=10, pady=10, expand=True, fill=tk.BOTH)
+        
+        self.show_otp_display()
+        self.update_otp_loop()
+        
+        self.about_button = tk.Button(root, text="About", font=("Arial", 10), fg="blue", command=self.show_about)
+        self.about_button.pack(side=tk.BOTTOM, pady=5, padx=10, anchor="se")
+    
+    def show_about(self):
+        messagebox.showinfo("About", "Ascent MFA\nVersion 1.0\nA simple OTP Authenticator Design and Developed by Phani.")
+
+    
+    def ask_password(self):
+        password = simpledialog.askstring("Password", "Enter password:", show='*')
+        if password != load_password():
+            messagebox.showerror("Error", "Incorrect password!")
+            self.root.destroy()
+    
+    def show_settings(self):
+        self.clear_right_frame()
+        
+        tk.Label(self.right_frame, text="New Password:", font=("Arial", 10)).pack()
+        self.new_password_entry = tk.Entry(self.right_frame, show='*')
+        self.new_password_entry.pack()
+        
+        tk.Label(self.right_frame, text="Confirm Password:", font=("Arial", 10)).pack()
+        self.confirm_password_entry = tk.Entry(self.right_frame, show='*')
+        self.confirm_password_entry.pack()
+        
+        button_frame = tk.Frame(self.right_frame)
+        button_frame.pack(pady=5)
+        
+        self.save_password_button = tk.Button(button_frame, text="Save", command=self.change_password)
+        self.save_password_button.pack(side=tk.LEFT, padx=5)
+        
+        self.cancel_button = tk.Button(button_frame, text="Cancel", command=self.show_otp_display)
+        self.cancel_button.pack(side=tk.RIGHT, padx=5)
+    
+    def change_password(self):
+        new_password = self.new_password_entry.get()
+        confirm_password = self.confirm_password_entry.get()
+        if new_password == confirm_password:
+            save_password(new_password)
+            messagebox.showinfo("Success", "Password changed successfully!")
+            self.show_otp_display()
+        else:
+            messagebox.showerror("Error", "Passwords do not match!")
+    
+    def show_add_form(self):
+        self.clear_right_frame()
+        
+        tk.Label(self.right_frame, text="Account:", font=("Arial", 10)).pack()
+        self.account_entry = tk.Entry(self.right_frame)
+        self.account_entry.pack()
+        
+        tk.Label(self.right_frame, text="Key:", font=("Arial", 10)).pack()
+        self.key_entry = tk.Entry(self.right_frame)
+        self.key_entry.pack()
+        
+        button_frame = tk.Frame(self.right_frame)
+        button_frame.pack(pady=5)
+        
+        self.add_account_button = tk.Button(button_frame, text="Add", command=self.add_account)
+        self.add_account_button.pack(side=tk.LEFT, padx=5)
+        
+        self.cancel_button = tk.Button(button_frame, text="Cancel", command=self.show_otp_display)
+        self.cancel_button.pack(side=tk.RIGHT, padx=5)
+    
+    def add_account(self):
+        name = self.account_entry.get()
+        key = self.key_entry.get()
+        if name and key:
+            accounts[name] = key
+            save_secrets()
+            self.refresh_list()
+            self.show_otp_display()
+        else:
+            messagebox.showerror("Error", "Both fields are required!")
+    
+    def delete_account(self):
+        selected = self.listbox.curselection()
+        if selected:
+            name = self.listbox.get(selected[0])
+            del accounts[name]
+            save_secrets()
+            self.refresh_list()
+            self.show_otp_display()
+    
+    def update_otp(self, event=None):
+        selected = self.listbox.curselection()
+        if selected:
+            name = self.listbox.get(selected[0])
+            if name in accounts and hasattr(self, "otp_display") and self.otp_display.winfo_exists():
+                otp = pyotp.TOTP(accounts[name]).now()
+                self.otp_display.config(text=otp)
+    
+    def update_otp_loop(self):
+        if self.root.winfo_exists():
+            self.update_otp()
+            self.root.after(30000, self.update_otp_loop)
+    
+    def show_otp_display(self):
+        self.clear_right_frame()
+        self.otp_display = tk.Label(self.right_frame, text="OTP", font=("Arial", 16, "bold"), fg="red")
+        self.otp_display.pack(pady=20)
+    
+    def refresh_list(self):
+        self.listbox.delete(0, tk.END)
+        for account in accounts:
+            self.listbox.insert(tk.END, account)
+    
+    def clear_right_frame(self):
+        for widget in self.right_frame.winfo_children():
+            widget.destroy()
+
+if _name_ == "_main_":
+    root = tk.Tk()
+    app = OTPApp(root)
+    root.mainloop()
